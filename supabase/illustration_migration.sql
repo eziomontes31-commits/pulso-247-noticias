@@ -1,1 +1,0 @@
--- Permite guardar las ilustraciones SVG generadas sin costo por Pulso 247.\nupdate storage.buckets set allowed_mime_types=array['image/png','image/jpeg','image/webp','image/svg+xml'] where id='pulso-media';\n
