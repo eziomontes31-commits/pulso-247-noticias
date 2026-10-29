@@ -1,0 +1,9 @@
+{
+  "name": "pulso-247-noticias",
+  "version": "1.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}
