@@ -12,10 +12,16 @@ export default async function handler(req, res) {
   const base = process.env.SUPABASE_URL;
   const anon = process.env.SUPABASE_ANON_KEY;
   const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const apiKey = process.env.GEMINI_API_KEY;
 
-  if (!base || !anon || !service || !apiKey) {
-    return res.status(503).json({ error: 'Faltan variables privadas en Vercel.' });
+  // Recolectar todas las API keys configuradas en Vercel para rotación
+  const apiKeys = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3
+  ].filter(Boolean);
+
+  if (!base || !anon || !service || apiKeys.length === 0) {
+    return res.status(503).json({ error: 'Faltan variables privadas o GEMINI_API_KEY en Vercel.' });
   }
 
   try {
@@ -48,8 +54,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Escribe un titular o tema para generar la noticia.' });
     }
 
-    const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
-
     const promptText = `Actúas como periodista y editor del portal de noticias "Pulso 247".
 A partir de la siguiente información, redacta una nota periodística profesional y completa:
 
@@ -66,31 +70,43 @@ Devuelve exclusivamente un objeto JSON válido con exactamente estas cuatro prop
   "sources": ["Pulso 247", "Redacción local"]
 }`;
 
-    // 3. Llamada directa a la API de Gemini con formato JSON estricto
-    const response = await fetch(
-      https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: promptText }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.4
+    const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
+    let rawText = '';
+    let lastErrorMsg = '';
+
+    // 3. Sistema de rotación automática entre las API Keys disponibles
+    for (const currentKey of apiKeys) {
+      try {
+        const response = await fetch(
+          https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(currentKey)},
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: promptText }] }],
+              generationConfig: {
+                responseMimeType: 'application/json',
+                temperature: 0.4
+              }
+            })
           }
-        })
+        );
+
+        const data = await response.json();
+
+        if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
+          rawText = data.candidates[0].content.parts[0].text.trim();
+          break; // Si tiene éxito, sale del ciclo
+        } else {
+          lastErrorMsg = data.error?.message || 'Error desconocido en Gemini';
+        }
+      } catch (err) {
+        lastErrorMsg = err.message;
       }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(502).json({ error: data.error?.message || 'Error en la respuesta de Google Gemini.' });
     }
 
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!rawText) {
-      return res.status(502).json({ error: 'La IA no devolvió contenido.' });
+      return res.status(502).json({ error: 'Todas las claves alcanzaron su cuota o fallaron. Detalle: ' + lastErrorMsg });
     }
 
     // 4. Parsear la respuesta JSON de forma limpia
