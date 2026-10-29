@@ -1,12 +1,4 @@
-{
-  "version": 2,
-  "crons": [
-    {
-      "path": "/api/bot-run",
-      "schedule": "0 11 * * *"
-    }
-  ],
-  "functions": {
+"functions": {
     "api/bot-run.js": {
       "maxDuration": 10
     },
@@ -14,4 +6,3 @@
       "maxDuration": 10
     }
   }
-}
