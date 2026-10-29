@@ -19,11 +19,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Validar autenticación de administrador con Supabase
+    // 1. Validar sesión de administrador en Supabase
     const userResponse = await fetch(base + '/auth/v1/user', {
       headers: { apikey: anon, Authorization: 'Bearer ' + token }
     });
-    if (!userResponse.ok) return res.status(401).json({ error: 'La sesión venció. Vuelve a iniciar sesión.' });
+    if (!userResponse.ok) return res.status(401).json({ error: 'La sesión venció. Inicia sesión de nuevo.' });
     const user = await userResponse.json();
 
     const profileResponse = await fetch(base + '/rest/v1/profiles?select=role&id=eq.' + encodeURIComponent(user.id), {
@@ -45,114 +45,70 @@ export default async function handler(req, res) {
 
     const topic = [title, summary, bodyText].filter(Boolean).join('\n');
     if (!topic) {
-      return res.status(400).json({ error: 'Escribe un titular o tema para la noticia.' });
+      return res.status(400).json({ error: 'Escribe un titular o tema para generar la noticia.' });
     }
 
     const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
-    const promptText = `Actúas como periodista y editor de Pulso 247.
-Redacta una nota periodística completa, clara y bien desarrollada sobre:
+    const promptText = `Actúas como periodista y editor del portal de noticias "Pulso 247".
+A partir de la siguiente información, redacta una nota periodística profesional y completa:
 
-DETALLES:
 - Cobertura: ${region}
 - Categoría: ${category}
 - Lugar: ${location}
-- Tema o Palabras clave: ${topic}
+- Tema o notas del editor: ${topic}
 
-INSTRUCCIONES DE FORMATO:
-Devuelve ÚNICAMENTE un objeto JSON estricto sin bloques de formato Markdown adicionales, con esta estructura exacta:
+Devuelve exclusivamente un objeto JSON válido con exactamente estas cuatro propiedades de texto:
 {
-  "title": "Titular de la noticia",
-  "summary": "Resumen o subtítulo breve",
-  "body": "Cuerpo completo de la noticia desarrollado en varios párrafos",
-  "sources": "Pulso 247 / Reportes de actualidad"
+  "title": "Un titular atractivo y periodístico",
+  "summary": "Un resumen o subtítulo breve de 1 a 2 frases",
+  "body": "El cuerpo completo de la noticia desarrollado en varios párrafos",
+  "sources": ["Pulso 247", "Redacción local"]
 }`;
 
-    let rawText = '';
-    let fetchedWebSources = [];
-
-    // Intentar primero con la herramienta de búsqueda web (Google Search Grounding)
-    try {
-      const webSearchRes = await fetch(
-        https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: promptText }] }],
-            tools: [{ google_search: {} }]
-          })
-        }
-      );
-
-      const webData = await webSearchRes.json();
-      if (webSearchRes.ok && webData.candidates?.[0]?.content?.parts?.[0]?.text) {
-        rawText = webData.candidates[0].content.parts[0].text.trim();
-        const groundingChunks = webData.candidates[0].groundingMetadata?.groundingChunks || [];
-        fetchedWebSources = groundingChunks.map(c => c.web?.uri).filter(Boolean);
+    // 3. Llamada directa a la API de Gemini con formato JSON estricto
+    const response = await fetch(
+      https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: promptText }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.4
+          }
+        })
       }
-    } catch (e) {
-      console.log('Fallo en búsqueda web, recurriendo a generación directa');
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(502).json({ error: data.error?.message || 'Error en la respuesta de Google Gemini.' });
     }
 
-    // Respaldo (Fallback): Generación directa si la búsqueda web falla o fue rechazada por cuotas
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
     if (!rawText) {
-      const directRes = await fetch(
-        https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: promptText }] }],
-            generationConfig: {
-              responseMimeType: 'application/json'
-            }
-          })
-        }
-      );
-
-      const directData = await directRes.json();
-      if (!directRes.ok) {
-        return res.status(502).json({ error: directData.error?.message || 'Error en respuesta de Google Gemini.' });
-      }
-      rawText = directData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      return res.status(502).json({ error: 'La IA no devolvió contenido.' });
     }
 
-    if (!rawText) {
-      return res.status(502).json({ error: 'La IA no devolvió texto en la respuesta.' });
-    }
-
-    // 3. Extraer y limpiar el JSON devuelto
+    // 4. Parsear la respuesta JSON de forma limpia
     let article;
     try {
       article = JSON.parse(rawText);
     } catch (e) {
-      const cleanJson = rawText.replace(/json/g, '').replace(//g, '').trim();
-      const start = cleanJson.indexOf('{');
-      const end = cleanJson.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        article = JSON.parse(cleanJson.slice(start, end + 1));
-      }
+      const clean = rawText.replace(/json/g, '').replace(//g, '').trim();
+      const start = clean.indexOf('{');
+      const end = clean.lastIndexOf('}');
+      article = JSON.parse(clean.slice(start, end + 1));
     }
-
-    if (!article || typeof article !== 'object') {
-      return res.status(502).json({ error: 'La respuesta de la IA no se pudo convertir a JSON.' });
-    }
-
-    // 4. Formatear la respuesta final para el panel web
-    let sourcesList = [];
-    if (Array.isArray(article.sources)) {
-      sourcesList = article.sources.map(String);
-    } else if (typeof article.sources === 'string' && article.sources) {
-      sourcesList = [article.sources];
-    }
-    const finalSources = [...new Set([...sourcesList, ...fetchedWebSources])];
 
     return res.status(200).json({
-      title: String(article.title || title || 'Titular redactado con IA'),
+      title: String(article.title || title || ''),
       summary: String(article.summary || summary || ''),
       body: String(article.body || ''),
-      sources: finalSources
+      sources: Array.isArray(article.sources) ? article.sources : ['Pulso 247']
     });
 
   } catch (error) {
