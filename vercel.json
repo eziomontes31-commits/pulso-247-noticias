@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
       "path": "/api/bot-run",
@@ -7,10 +7,10 @@
     }
   ],
   "functions": {
-    "api/bot-run.js": {
+    "/api/bot-run.js": {
       "maxDuration": 10
     },
-    "api/image.js": {
+    "/api/image.js": {
       "maxDuration": 10
     }
   }
