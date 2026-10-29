@@ -19,11 +19,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Validar administrador en Supabase
+    // 1. Validar autenticación de administrador con Supabase
     const userResponse = await fetch(base + '/auth/v1/user', {
       headers: { apikey: anon, Authorization: 'Bearer ' + token }
     });
-    if (!userResponse.ok) return res.status(401).json({ error: 'La sesión venció. Cierra sesión y vuelve a entrar.' });
+    if (!userResponse.ok) return res.status(401).json({ error: 'La sesión venció. Vuelve a iniciar sesión.' });
     const user = await userResponse.json();
 
     const profileResponse = await fetch(base + '/rest/v1/profiles?select=role&id=eq.' + encodeURIComponent(user.id), {
@@ -31,7 +31,7 @@ export default async function handler(req, res) {
     });
     const profiles = await profileResponse.json();
     if (!profileResponse.ok || profiles[0]?.role !== 'admin') {
-      return res.status(403).json({ error: 'Solo el administrador autorizado puede usar el asistente.' });
+      return res.status(403).json({ error: 'Acceso no autorizado.' });
     }
 
     // 2. Extraer datos del formulario
@@ -41,103 +41,122 @@ export default async function handler(req, res) {
     const bodyText = String(input.body || '').trim();
     const region = String(input.region || 'Nacional').trim();
     const category = String(input.category || 'Actualidad').trim();
-    const location = String(input.location || 'Córdoba, Colombia').trim();
+    const location = String(input.location || 'Colombia').trim();
 
     const topic = [title, summary, bodyText].filter(Boolean).join('\n');
     if (!topic) {
-      return res.status(400).json({ error: 'Escribe un titular o palabras clave para investigar.' });
+      return res.status(400).json({ error: 'Escribe un titular o tema para la noticia.' });
     }
-
-    // 3. Crear Prompt optimizado para búsqueda web
-    const prompt = `Actúas como periodista y editor de Pulso 247.
-Busca información actual en internet sobre el siguiente tema:
-
-INFORMACIÓN DE LA SOLICITUD:
-- Cobertura: ${region}
-- Categoría: ${category}
-- Lugar: ${location}
-- Tema / Palabras clave: ${topic}
-
-INSTRUCCIONES EDITORIALES:
-1. Busca información real en la web.
-2. Redacta la noticia completa en formato JSON.
-3. Devuelve únicamente el objeto JSON con la siguiente estructura:
-{
-  "title": "Titular de la noticia",
-  "summary": "Resumen breve de 1 a 2 frases",
-  "body": "Cuerpo completo de la noticia desarrollado en varios párrafos",
-  "sources": ["Nombre o URL de la fuente 1", "Nombre o URL de la fuente 2"]
-}`;
 
     const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
 
-    // 4. Llamada a Gemini usando Búsqueda Web sin responseSchema (evita el error 500)
-    const geminiResponse = await fetch(
-      https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          tools: [{ google_search: {} }],
-          generationConfig: {
-            temperature: 0.4
-          }
-        })
+    const promptText = `Actúas como periodista y editor de Pulso 247.
+Redacta una nota periodística completa, clara y bien desarrollada sobre:
+
+DETALLES:
+- Cobertura: ${region}
+- Categoría: ${category}
+- Lugar: ${location}
+- Tema o Palabras clave: ${topic}
+
+INSTRUCCIONES DE FORMATO:
+Devuelve ÚNICAMENTE un objeto JSON estricto sin bloques de formato Markdown adicionales, con esta estructura exacta:
+{
+  "title": "Titular de la noticia",
+  "summary": "Resumen o subtítulo breve",
+  "body": "Cuerpo completo de la noticia desarrollado en varios párrafos",
+  "sources": "Pulso 247 / Reportes de actualidad"
+}`;
+
+    let rawText = '';
+    let fetchedWebSources = [];
+
+    // Intentar primero con la herramienta de búsqueda web (Google Search Grounding)
+    try {
+      const webSearchRes = await fetch(
+        https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: promptText }] }],
+            tools: [{ google_search: {} }]
+          })
+        }
+      );
+
+      const webData = await webSearchRes.json();
+      if (webSearchRes.ok && webData.candidates?.[0]?.content?.parts?.[0]?.text) {
+        rawText = webData.candidates[0].content.parts[0].text.trim();
+        const groundingChunks = webData.candidates[0].groundingMetadata?.groundingChunks || [];
+        fetchedWebSources = groundingChunks.map(c => c.web?.uri).filter(Boolean);
       }
-    );
-
-    const data = await geminiResponse.json();
-
-    if (!geminiResponse.ok) {
-      return res.status(502).json({ error: data.error?.message || 'Error en la respuesta de Google Gemini.' });
+    } catch (e) {
+      console.log('Fallo en búsqueda web, recurriendo a generación directa');
     }
 
-    const candidate = data.candidates?.[0];
-    const rawText = candidate?.content?.parts?.map(part => part.text || '').join('').trim() || '';
+    // Respaldo (Fallback): Generación directa si la búsqueda web falla o fue rechazada por cuotas
+    if (!rawText) {
+      const directRes = await fetch(
+        https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: promptText }] }],
+            generationConfig: {
+              responseMimeType: 'application/json'
+            }
+          })
+        }
+      );
+
+      const directData = await directRes.json();
+      if (!directRes.ok) {
+        return res.status(502).json({ error: directData.error?.message || 'Error en respuesta de Google Gemini.' });
+      }
+      rawText = directData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
 
     if (!rawText) {
-      return res.status(502).json({ error: 'La IA investigó pero no devolvió texto.' });
+      return res.status(502).json({ error: 'La IA no devolvió texto en la respuesta.' });
     }
 
-    // 5. Parsear la respuesta JSON de forma segura
+    // 3. Extraer y limpiar el JSON devuelto
     let article;
     try {
       article = JSON.parse(rawText);
     } catch (e) {
-      const start = rawText.indexOf('{');
-      const end = rawText.lastIndexOf('}');
+      const cleanJson = rawText.replace(/json/g, '').replace(//g, '').trim();
+      const start = cleanJson.indexOf('{');
+      const end = cleanJson.lastIndexOf('}');
       if (start >= 0 && end > start) {
-        try {
-          article = JSON.parse(rawText.slice(start, end + 1));
-        } catch (err) {}
+        article = JSON.parse(cleanJson.slice(start, end + 1));
       }
     }
 
     if (!article || typeof article !== 'object') {
-      return res.status(502).json({ error: 'No se pudo estructurar el JSON de la noticia.' });
+      return res.status(502).json({ error: 'La respuesta de la IA no se pudo convertir a JSON.' });
     }
 
-    // 6. Extraer fuentes web detectadas por Google
-    const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
-    const verifiedLinks = groundingChunks
-      .map(chunk => chunk.web?.uri)
-      .filter(Boolean);
+    // 4. Formatear la respuesta final para el panel web
+    let sourcesList = [];
+    if (Array.isArray(article.sources)) {
+      sourcesList = article.sources.map(String);
+    } else if (typeof article.sources === 'string' && article.sources) {
+      sourcesList = [article.sources];
+    }
+    const finalSources = [...new Set([...sourcesList, ...fetchedWebSources])];
 
-    const modelSources = Array.isArray(article.sources) ? article.sources.map(String) : [];
-    const uniqueSources = [...new Set([...modelSources, ...verifiedLinks])];
-
-    const result = {
-      title: String(article.title || title || 'Noticia sin título'),
+    return res.status(200).json({
+      title: String(article.title || title || 'Titular redactado con IA'),
       summary: String(article.summary || summary || ''),
       body: String(article.body || ''),
-      sources: uniqueSources
-    };
-
-    return res.status(200).json(result);
+      sources: finalSources
+    });
 
   } catch (error) {
     console.error('Error en api/generate:', error);
-    return res.status(500).json({ error: 'Error interno del servidor: ' + error.message });
+    return res.status(500).json({ error: 'Error del servidor: ' + error.message });
   }
 }
