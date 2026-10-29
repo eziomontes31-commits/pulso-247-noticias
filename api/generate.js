@@ -65,9 +65,9 @@ ${suppliedSources || '(ninguna)'}
 
 Recuerda: busca primero, redacta después, cita las fuentes reales y no rellenes vacíos con suposiciones.`;
 
-    const model = process.env.GEMINI_TEXT_MODEL || 'gemini-3.1-flash-lite';
+    const model = process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash';
     const geminiResponse = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey),
+      https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)},
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -76,16 +76,6 @@ Recuerda: busca primero, redacta después, cita las fuentes reales y no rellenes
           tools: [{ google_search: {} }],
           generationConfig: {
             responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'OBJECT',
-              properties: {
-                title: { type: 'STRING' },
-                summary: { type: 'STRING' },
-                body: { type: 'STRING' },
-                sources: { type: 'ARRAY', items: { type: 'STRING' } }
-              },
-              required: ['title', 'summary', 'body', 'sources']
-            },
             temperature: 0.4
           }
         })
